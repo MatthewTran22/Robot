@@ -1,6 +1,6 @@
 """
 Transcriber - Real-time Speech-to-Text using Faster-Whisper
-Continuous audio transcription for live applications
+Continuous audio transcription for live applications with speaker recognition
 """
 
 import pyaudio
@@ -10,13 +10,15 @@ import threading
 import queue
 from typing import Optional, Callable
 import time
+from VoiceRecognition import VoiceRecognizer
 
 
 class RealtimeTranscriber:
     """
     Real-time audio transcription using Faster-Whisper
     """
-    def __init__(self, model_size: str = "base", device: str = "cpu", compute_type: str = "int8"):
+    def __init__(self, model_size: str = "base", device: str = "cpu", compute_type: str = "int8",
+                 enable_speaker_recognition: bool = True):
         """
         Initialize the transcriber
         
@@ -24,6 +26,7 @@ class RealtimeTranscriber:
             model_size: Model size - "tiny", "base", "small", "medium", "large-v3"
             device: "cpu" or "cuda" for GPU acceleration
             compute_type: "int8" (fast, CPU), "float16" (GPU), "float32" (best quality)
+            enable_speaker_recognition: Enable speaker identification
         """
         print(f"Loading Faster-Whisper model '{model_size}'...")
         self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
@@ -38,6 +41,21 @@ class RealtimeTranscriber:
         self.audio = pyaudio.PyAudio()
         self.is_recording = False
         self.audio_queue = queue.Queue()
+        
+        # Voice recognition
+        self.enable_speaker_recognition = enable_speaker_recognition
+        self.voice_recognizer = None
+        if enable_speaker_recognition:
+            try:
+                self.voice_recognizer = VoiceRecognizer()
+                if self.voice_recognizer.voice_profiles:
+                    print(f"✓ Voice recognition enabled ({len(self.voice_recognizer.voice_profiles)} speaker(s) enrolled)")
+                else:
+                    print("⚠ Voice recognition enabled but no speakers enrolled yet")
+                    print("  Run 'python Transcribe/enroll_voice.py' to enroll speakers")
+            except Exception as e:
+                print(f"⚠ Could not load voice recognition: {e}")
+                self.enable_speaker_recognition = False
         
     def start(self, callback: Optional[Callable[[str], None]] = None,
               language: Optional[str] = None, 
@@ -90,11 +108,23 @@ class RealtimeTranscriber:
                         vad_parameters=dict(min_silence_duration_ms=500)
                     )
                     
+                    # Identify speaker if enabled
+                    speaker_name = "Unknown"
+                    confidence = 0.0
+                    if self.enable_speaker_recognition and self.voice_recognizer:
+                        speaker_name, confidence = self.voice_recognizer.identify_speaker(temp_file)
+                    
                     for segment in segments:
                         text = segment.text.strip()
                         if text:
                             timestamp = time.strftime("%H:%M:%S")
-                            print(f"[{timestamp}] {text}")
+                            
+                            # Format output as "name: message"
+                            if self.enable_speaker_recognition:
+                                confidence_indicator = f" ({confidence:.0%})" if confidence > 0 else ""
+                                print(f"[{timestamp}] {speaker_name}{confidence_indicator}: {text}")
+                            else:
+                                print(f"[{timestamp}] {text}")
                             
                             if callback:
                                 callback(text)
@@ -142,6 +172,7 @@ def main():
     """Real-time transcription application"""
     print("\n" + "="*60)
     print("    REAL-TIME SPEECH-TO-TEXT TRANSCRIBER")
+    print("    With Speaker Recognition")
     print("="*60)
     print("\nAvailable Models:")
     print("1. tiny   - Fastest, basic accuracy")
@@ -166,8 +197,14 @@ def main():
     chunk_duration = input("Process chunks of N seconds (default 5): ").strip()
     chunk_duration = int(chunk_duration) if chunk_duration.isdigit() else 5
     
+    print("\nEnable speaker recognition? (y/n, default y): ", end='')
+    enable_recognition = input().strip().lower() != 'n'
+    
     print(f"\nInitializing with '{model_size}' model...")
-    transcriber = RealtimeTranscriber(model_size=model_size)
+    transcriber = RealtimeTranscriber(
+        model_size=model_size,
+        enable_speaker_recognition=enable_recognition
+    )
     
     # Start transcription
     transcriber.start(

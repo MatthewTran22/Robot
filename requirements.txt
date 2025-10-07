@@ -6,3 +6,6 @@ tf-keras
 mediapipe
 faster-whisper
 pyaudio
+resemblyzer
+scipy
+soundfile

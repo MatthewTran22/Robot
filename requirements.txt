@@ -4,3 +4,5 @@ deepface
 chromadb
 tf-keras
 mediapipe
+faster-whisper
+pyaudio

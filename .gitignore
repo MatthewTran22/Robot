@@ -1,1 +1,11 @@
 /venv/
+face_vector_db/
+face_data/
+.deepface/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg-info/

@@ -1,4 +1,6 @@
 opencv-python
 numpy
-face_recognition
+deepface
 chromadb
+tf-keras
+mediapipe

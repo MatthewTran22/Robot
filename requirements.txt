@@ -1,11 +1,12 @@
 opencv-python
-numpy
+numpy>=1.21.0,<2.0.0
 deepface
 chromadb
 tf-keras
 mediapipe
 faster-whisper
 pyaudio
-resemblyzer
 scipy
 soundfile
+webrtcvad
+resemblyzer

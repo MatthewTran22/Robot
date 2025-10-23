@@ -8,49 +8,31 @@ import uuid
 from typing import List, Tuple, Optional, Dict
 import json
 import warnings
-import mediapipe as mp
 from collections import deque
 warnings.filterwarnings('ignore')
 
 
 class PersonTracker:
     """
-    Track a person continuously using OpenCV object tracker, even when face is not visible
+    Track a person continuously using OpenCV object tracker
     """
     def __init__(self, person_name: str, initial_box: Tuple[int, int, int, int], 
-                 frame: np.ndarray, confidence: float, enable_body_tracking: bool = True):
+                 frame: np.ndarray, confidence: float):
         self.person_name = person_name
         self.confidence = confidence
-        self.enable_body_tracking = enable_body_tracking
         self.current_box = initial_box  # Current tracking box
+        self.last_face_box = initial_box  # Store the face box
         
         # Initialize OpenCV object tracker (CSRT is accurate, KCF is faster)
         self.tracker = cv2.TrackerKCF_create()  # Fast and reliable
         
-        # Expand initial box for full body tracking
-        if enable_body_tracking:
-            x, y, w, h = initial_box
-            # Expand to approximate body size
-            body_w = int(w * 2.5)
-            body_h = int(h * 5)
-            body_x = max(0, x - int((body_w - w) / 2))
-            body_y = max(0, y - int(h * 0.5))
-            
-            # Ensure within frame
-            h_frame, w_frame = frame.shape[:2]
-            body_w = min(body_w, w_frame - body_x)
-            body_h = min(body_h, h_frame - body_y)
-            
-            self.current_box = (body_x, body_y, body_w, body_h)
-        
-        # Initialize tracker with the box
-        x, y, w, h = self.current_box
+        # Initialize tracker with the face box
+        x, y, w, h = initial_box
         self.tracker.init(frame, (x, y, w, h))
         
         # Face re-identification tracking
         self.frames_since_face_seen = 0
         self.max_frames_without_face = 180  # Re-identify every ~6 seconds (at 30fps)
-        self.last_face_box = initial_box
         
     def update_tracking(self, frame: np.ndarray) -> bool:
         """
@@ -78,26 +60,10 @@ class PersonTracker:
         self.frames_since_face_seen = 0
         self.last_face_box = face_box
         
-        # Expand to body box if enabled
-        if self.enable_body_tracking:
-            x, y, w, h = face_box
-            body_w = int(w * 2.5)
-            body_h = int(h * 5)
-            body_x = max(0, x - int((body_w - w) / 2))
-            body_y = max(0, y - int(h * 0.5))
-            
-            h_frame, w_frame = frame.shape[:2]
-            body_w = min(body_w, w_frame - body_x)
-            body_h = min(body_h, h_frame - body_y)
-            
-            new_box = (body_x, body_y, body_w, body_h)
-        else:
-            new_box = face_box
-        
-        # Reinitialize tracker with updated position
-        self.current_box = new_box
+        # Reinitialize tracker with updated face position
+        self.current_box = face_box
         self.tracker = cv2.TrackerKCF_create()
-        x, y, w, h = new_box
+        x, y, w, h = face_box
         self.tracker.init(frame, (x, y, w, h))
     
     def get_box(self) -> Tuple[int, int, int, int]:
@@ -143,7 +109,7 @@ class VectorFaceRecognitionSystem:
     """
     Face Recognition System using DeepFace embeddings stored in ChromaDB vector database
     """
-    def __init__(self, model_name: str = "Facenet512", enable_body_tracking: bool = True):
+    def __init__(self, model_name: str = "Facenet512"):
         """
         Initialize the face recognition system
         
@@ -155,10 +121,8 @@ class VectorFaceRecognitionSystem:
                 - "OpenFace" (128-d, lightweight)
                 - "DeepFace" (4096-d, very slow)
                 - "ArcFace" (512-d, state-of-the-art)
-            enable_body_tracking: Enable full body tracking for recognized faces
         """
         self.model_name = model_name
-        self.enable_body_tracking = enable_body_tracking
         self.db_dir = Path("face_vector_db")
         self.db_dir.mkdir(exist_ok=True)
         
@@ -177,21 +141,7 @@ class VectorFaceRecognitionSystem:
             metadata={"hnsw:space": "cosine"}  # Using cosine similarity
         )
         
-        # Initialize MediaPipe Pose for body detection
-        if enable_body_tracking:
-            self.mp_pose = mp.solutions.pose
-            self.pose = self.mp_pose.Pose(
-                static_image_mode=False,
-                model_complexity=1,
-                enable_segmentation=False,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5
-            )
-            print(f"✓ Vector database initialized with {model_name} model + Body Tracking")
-        else:
-            self.pose = None
-            print(f"✓ Vector database initialized with {model_name} model")
-        
+        print(f"✓ Vector database initialized with {model_name} model")
         self._print_database_stats()
     
     def _print_database_stats(self):
@@ -272,90 +222,6 @@ class VectorFaceRecognitionSystem:
             face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
             faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
             return [(x, y, w, h) for (x, y, w, h) in faces]
-    
-    def get_body_bounding_box(self, frame: np.ndarray, face_box: Tuple[int, int, int, int]) -> Optional[Tuple[int, int, int, int]]:
-        """
-        Get full body bounding box using MediaPipe Pose
-        
-        Args:
-            frame: BGR image from OpenCV
-            face_box: Face bounding box (x, y, w, h) to help locate the person
-            
-        Returns:
-            Body bounding box (x, y, w, h) or None if detection fails
-        """
-        if not self.enable_body_tracking or self.pose is None:
-            return None
-        
-        try:
-            # Convert to RGB for MediaPipe
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Process with MediaPipe Pose
-            results = self.pose.process(rgb_frame)
-            
-            if results.pose_landmarks:
-                # Get image dimensions
-                h, w, _ = frame.shape
-                
-                # Extract all landmark coordinates
-                landmarks = results.pose_landmarks.landmark
-                
-                # Get bounding box from all visible landmarks
-                x_coords = []
-                y_coords = []
-                
-                for landmark in landmarks:
-                    if landmark.visibility > 0.5:  # Only use visible landmarks
-                        x_coords.append(int(landmark.x * w))
-                        y_coords.append(int(landmark.y * h))
-                
-                if len(x_coords) > 0 and len(y_coords) > 0:
-                    # Calculate bounding box with padding
-                    x_min = max(0, min(x_coords) - 20)
-                    y_min = max(0, min(y_coords) - 20)
-                    x_max = min(w, max(x_coords) + 20)
-                    y_max = min(h, max(y_coords) + 20)
-                    
-                    body_w = x_max - x_min
-                    body_h = y_max - y_min
-                    
-                    # Ensure the body box contains the face box
-                    face_x, face_y, face_w, face_h = face_box
-                    if x_min <= face_x and y_min <= face_y and x_max >= (face_x + face_w):
-                        return (x_min, y_min, body_w, body_h)
-            
-            # Fallback: estimate body box from face (assume body is ~4x face height)
-            face_x, face_y, face_w, face_h = face_box
-            h, w, _ = frame.shape
-            
-            # Estimate body dimensions
-            body_w = int(face_w * 2.5)
-            body_h = int(face_h * 5)
-            
-            # Center the body box horizontally around the face
-            body_x = max(0, face_x - int((body_w - face_w) / 2))
-            body_y = max(0, face_y - int(face_h * 0.5))  # Start slightly above face
-            
-            # Ensure box stays within frame
-            body_w = min(body_w, w - body_x)
-            body_h = min(body_h, h - body_y)
-            
-            return (body_x, body_y, body_w, body_h)
-            
-        except Exception as e:
-            # Fallback estimation
-            face_x, face_y, face_w, face_h = face_box
-            h, w, _ = frame.shape
-            
-            body_w = int(face_w * 2.5)
-            body_h = int(face_h * 5)
-            body_x = max(0, face_x - int((body_w - face_w) / 2))
-            body_y = max(0, face_y - int(face_h * 0.5))
-            body_w = min(body_w, w - body_x)
-            body_h = min(body_h, h - body_y)
-            
-            return (body_x, body_y, body_w, body_h)
     
     def add_person_to_database(self, person_name: str, num_samples: int = 20, detector: str = "opencv"):
         """
@@ -596,14 +462,11 @@ class VectorFaceRecognitionSystem:
         print("\n=== Face Recognition Started ===")
         print(f"Model: {self.model_name}")
         print(f"Detector: {detector}")
-        print(f"Body Tracking: {'Enabled' if self.enable_body_tracking else 'Disabled'}")
         print(f"Recognition threshold: {recognition_threshold}")
         print("\n🎮 Controls:")
         print("  'q' - Quit")
         if live_enrollment:
             print("  'a' - Add new person (live enrollment)")
-        if self.enable_body_tracking:
-            print("\n💡 Recognized people will have FULL BODY bounding boxes!")
         print()
         
         cap = cv2.VideoCapture(0)
@@ -684,7 +547,7 @@ class VectorFaceRecognitionSystem:
                                     # Create new tracker for recognized person
                                     new_tracker = PersonTracker(
                                         person_name, (x, y, w, h), frame, 
-                                        similarity, self.enable_body_tracking
+                                        similarity
                                     )
                                     tracked_people.append(new_tracker)
                                     print(f"Started tracking {person_name}")
@@ -701,21 +564,22 @@ class VectorFaceRecognitionSystem:
                                 cv2.putText(frame, text, (x+5, y-10), 
                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
-            # STEP 3: Draw all tracked people (every frame - BODY BOX ONLY)
+            # STEP 3: Draw all tracked people (every frame - FACE BOX ONLY)
             for tracker in tracked_people:
-                x, y, w, h = tracker.get_box()
+                # Draw the face box instead of body box
+                x, y, w, h = tracker.last_face_box
                 
                 color = (0, 255, 0)  # Green for recognized and tracked
                 text = f"{tracker.person_name}"
                 
-                # Draw ONLY the body tracking box (thick green line)
-                cv2.rectangle(frame, (x, y), (x+w, y+h), color, 4)
+                # Draw the face tracking box
+                cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
                 
-                # Draw label at top of body box
-                label_height = 40
+                # Draw label at top of face box
+                label_height = 35
                 cv2.rectangle(frame, (x, y-label_height), (x+w, y), color, -1)
-                cv2.putText(frame, text, (x+10, y-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+                cv2.putText(frame, text, (x+5, y-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
             # Display instructions
             y_pos = 30
